@@ -1,0 +1,135 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>8da767b6-ad4f-4cfd-b32e-a57607a48030</ProjectGuid>
+    <ProjectHome>.</ProjectHome>
+    <StartupFile>main.py</StartupFile>
+    <SearchPath>
+    </SearchPath>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <Name>Alpaca Ticker API Downloader v2</Name>
+    <RootNamespace>Alpaca Ticker API Downloader v2</RootNamespace>
+    <TestFramework>Pytest</TestFramework>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="downloaders\bulk_downloader.py" />
+    <Compile Include="config\settings.py" />
+    <Compile Include="config\__init__.py" />
+    <Compile Include="connectors\alpaca_api.py" />
+    <Compile Include="connectors\__init__.py" />
+    <Compile Include="downloaders\coordinator.py" />
+    <Compile Include="downloaders\symbol_loader.py" />
+    <Compile Include="downloaders\__init__.py" />
+    <Compile Include="scripts\auto_tune_api_limits.py" />
+    <Compile Include="scripts\fetch_symbols.py" />
+    <Compile Include="scripts\test_max_symbols_per_request.py" />
+    <Compile Include="storage\file_splitter.py" />
+    <Compile Include="main.py" />
+    <Compile Include="storage\master_file_writer.py" />
+    <Compile Include="processors\data_parser.py" />
+    <Compile Include="processors\__init__.py" />
+    <Compile Include="storage\state_manager.py" />
+    <Compile Include="storage\parquet_writer.py" />
+    <Compile Include="storage\__init__.py" />
+    <Compile Include="utils\diagnostics.py" />
+    <Compile Include="utils\helpers.py" />
+    <Compile Include="utils\logger.py" />
+    <Compile Include="utils\null_data_tracker.py" />
+    <Compile Include="utils\trading_calendar.py" />
+    <Compile Include="utils\__init__.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="config\" />
+    <Folder Include="config\__pycache__\" />
+    <Folder Include="connectors\" />
+    <Folder Include="connectors\__pycache__\" />
+    <Folder Include="data\" />
+    <Folder Include="downloaders\" />
+    <Folder Include="downloaders\__pycache__\" />
+    <Folder Include="logs\" />
+    <Folder Include="logs\server_tests\" />
+    <Folder Include="processors\" />
+    <Folder Include="processors\__pycache__\" />
+    <Folder Include="scripts\" />
+    <Folder Include="storage\" />
+    <Folder Include="storage\__pycache__\" />
+    <Folder Include="utils\" />
+    <Folder Include="utils\__pycache__\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="config\__pycache__\settings.cpython-313.pyc" />
+    <Content Include="config\__pycache__\__init__.cpython-313.pyc" />
+    <Content Include="connectors\__pycache__\thetadata_api.cpython-313.pyc" />
+    <Content Include="connectors\__pycache__\thetadata_mcp.cpython-313.pyc" />
+    <Content Include="connectors\__pycache__\__init__.cpython-313.pyc" />
+    <Content Include="data\symbols.csv" />
+    <Content Include="downloaders\__pycache__\coordinator.cpython-313.pyc" />
+    <Content Include="downloaders\__pycache__\__init__.cpython-313.pyc" />
+    <Content Include="logs\check_download.log" />
+    <Content Include="logs\data_quality_report_20251101_103057.csv" />
+    <Content Include="logs\data_quality_report_20251101_103840.csv" />
+    <Content Include="logs\data_quality_report_20251101_104109.csv" />
+    <Content Include="logs\data_quality_report_20251102_170758.csv" />
+    <Content Include="logs\data_quality_report_20251102_171304.csv" />
+    <Content Include="logs\data_quality_report_20251102_172039.csv" />
+    <Content Include="logs\data_quality_report_20251103_194844.csv" />
+    <Content Include="logs\data_quality_report_20251103_200054.csv" />
+    <Content Include="logs\data_quality_validation.log" />
+    <Content Include="logs\delete_zero_files.log" />
+    <Content Include="logs\deletion_log_20251102_171031.csv" />
+    <Content Include="logs\deletion_log_20251102_171129.csv" />
+    <Content Include="logs\deletion_log_20251102_171206.csv" />
+    <Content Include="logs\deletion_log_20251102_171408.csv" />
+    <Content Include="logs\deletion_log_20251102_171723.csv" />
+    <Content Include="logs\deletion_log_20251102_171933.csv" />
+    <Content Include="logs\deletion_log_20251102_172228.csv" />
+    <Content Include="logs\deletion_log_20251102_173934.csv" />
+    <Content Include="logs\deletion_log_20251102_174050.csv" />
+    <Content Include="logs\diagnostics.log" />
+    <Content Include="logs\find_trading_data.log" />
+    <Content Include="logs\forward_fill_cleaner.log" />
+    <Content Include="logs\mcp_investigation.log" />
+    <Content Include="logs\organize_data_20251101_073843.log" />
+    <Content Include="logs\organize_data_20251101_074026.log" />
+    <Content Include="logs\organize_data_20251101_074159.log" />
+    <Content Include="logs\organize_data_20251101_074214.log" />
+    <Content Include="logs\organize_data_20251101_074218.log" />
+    <Content Include="logs\organize_data_20251101_074236.log" />
+    <Content Include="logs\organize_data_20251101_074331.log" />
+    <Content Include="logs\organize_data_20251101_074652.log" />
+    <Content Include="logs\organize_data_20251101_074734.log" />
+    <Content Include="logs\recommendations.txt" />
+    <Content Include="logs\server_tests\concurrency_test_20240102.csv" />
+    <Content Include="logs\server_tests\test_results.log" />
+    <Content Include="logs\thetadata_pipeline.log" />
+    <Content Include="processors\__pycache__\data_parser.cpython-313.pyc" />
+    <Content Include="processors\__pycache__\__init__.cpython-313.pyc" />
+    <Content Include="storage\__pycache__\parquet_writer.cpython-313.pyc" />
+    <Content Include="storage\__pycache__\__init__.cpython-313.pyc" />
+    <Content Include="utils\__pycache__\diagnostics.cpython-313.pyc" />
+    <Content Include="utils\__pycache__\helpers.cpython-313.pyc" />
+    <Content Include="utils\__pycache__\logger.cpython-313.pyc" />
+    <Content Include="utils\__pycache__\null_data_tracker.cpython-313.pyc" />
+    <Content Include="utils\__pycache__\trading_calendar.cpython-313.pyc" />
+    <Content Include="utils\__pycache__\__init__.cpython-313.pyc" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+  <!-- Uncomment the CoreCompile target to enable the Build command in
+       Visual Studio and specify your pre- and post-build commands in
+       the BeforeBuild and AfterBuild targets below. -->
+  <!--<Target Name="CoreCompile" />-->
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+</Project>
