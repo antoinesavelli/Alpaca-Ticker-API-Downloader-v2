@@ -1,6 +1,6 @@
 """
 Main entry point for Alpaca data pipeline.
-Supports both standard and bulk download modes.
+Supports both standard and bulk download modes with exchange symbol loading.
 """
 import asyncio
 import logging
@@ -11,8 +11,8 @@ from processors.data_parser import DataParser
 from storage.parquet_writer import ParquetWriter
 from downloaders.coordinator import DownloadCoordinator
 from downloaders.bulk_downloader import BulkDownloader
+from downloaders.symbol_loader import SymbolLoader
 from utils.logger import setup_logger
-import pandas as pd
 
 
 async def main():
@@ -75,50 +75,55 @@ async def main():
     else:
         logger.info(f"Mode: STANDARD (per-symbol downloads)")
     
-    # Load symbols
+    # Initialize API
+    api = AlpacaAPI(config, logger)
+    
+    # Load symbols based on configuration
     try:
-        symbols_df = pd.read_csv(config.SYMBOL_FILE)
-        if 'symbol' in symbols_df.columns:
-            symbols = symbols_df['symbol'].tolist()
-        elif 'Symbol' in symbols_df.columns:
-            symbols = symbols_df['Symbol'].tolist()
-        else:
-            symbols = symbols_df.iloc[:, 0].tolist()
+        symbol_loader = SymbolLoader(logger, api_headers=api.headers)
         
-        symbols = [str(s).strip().upper() for s in symbols if pd.notna(s)]
-        logger.info(f"Loaded {len(symbols)} symbols from {config.SYMBOL_FILE}")
-        
-        if len(symbols) > 10:
-            logger.info(f"First 10: {', '.join(symbols[:10])}")
+        if config.SYMBOL_SOURCE == 'exchanges':
+            logger.info(f"\n{'='*60}")
+            logger.info(f"SYMBOL LOADING: EXCHANGE API")
+            logger.info(f"{'='*60}")
+            symbols = await symbol_loader.load_all_exchange_symbols(
+                exchanges=config.EXCHANGES,
+                min_avg_volume=config.MIN_AVG_VOLUME
+            )
+        else:  # csv
+            logger.info(f"\n{'='*60}")
+            logger.info(f"SYMBOL LOADING: CSV FILE")
+            logger.info(f"{'='*60}")
+            symbols = symbol_loader.load_symbols(config.SYMBOL_FILE)
+            logger.info(f"Loaded {len(symbols)} symbols from {config.SYMBOL_FILE}")
+            if len(symbols) > 10:
+                logger.info(f"First 10: {', '.join(symbols[:10])}")
         
     except Exception as e:
         logger.error(f"Failed to load symbols: {e}")
+        await api.close()
+        return
+    
+    # Verify API connectivity
+    try:
+        api_ok = await api.check_terminal_running()
+        if not api_ok:
+            logger.error("Alpaca API not accessible. Exiting.")
+            await api.close()
+            return
+    except Exception as e:
+        logger.error(f"API connectivity check failed: {e}")
+        await api.close()
         return
     
     # Initialize components
-    api = AlpacaAPI(config, logger)
     parser = DataParser(logger, output_dir=config.OUTPUT_DIR, config=config)
     
-    # Check connection
-    logger.info("\nChecking Alpaca API connection...")
-    
-    if not await api.check_terminal_running():
-        logger.error("❌ Alpaca API is not accessible")
-        logger.error("Check:")
-        logger.error("  1. ALPACA_API_KEY is set correctly")
-        logger.error("  2. ALPACA_SECRET_KEY is set correctly")
-        logger.error("  3. Internet connection is active")
-        logger.error("  4. Alpaca subscription includes SIP data feed")
-        return
-    
-    logger.info("✓ Alpaca API connection verified")
-    
-    # Choose download mode
     try:
         if config.BULK_DOWNLOAD_MODE:
-            # BULK MODE - Optimized for maximum API efficiency
+            # Bulk download mode
             bulk_downloader = BulkDownloader(config, api, parser, logger)
-            
+            # FIXED: Changed download_all() to download_bulk()
             summary = await bulk_downloader.download_bulk(
                 symbols=symbols,
                 start_date=config.START_DATE,
@@ -128,16 +133,13 @@ async def main():
             logger.info("\n" + "="*80)
             logger.info("BULK DOWNLOAD SUMMARY")
             logger.info("="*80)
-            logger.info(f"Duration: {summary.get('duration_seconds', 0)/60:.2f} minutes")
-            logger.info(f"Batches completed: {summary['completed_batches']}")
-            logger.info(f"Batches failed: {summary['failed_batches']}")
-            logger.info(f"Total records: {summary['total_records']:,}")
-            logger.info(f"Total symbols: {summary['total_symbols']}")
+            logger.info(f"Total records: {summary.get('total_records', 0):,}")
+            logger.info(f"Months split: {summary.get('months_split', 0)}")
+            logger.info(f"Daily files: {summary.get('daily_files', 0)}")
             logger.info("="*80)
-            
         else:
-            # STANDARD MODE - One symbol at a time
-            writer = ParquetWriter(config, logger)
+            # Standard mode (legacy)
+            writer = ParquetWriter(logger)
             coordinator = DownloadCoordinator(config, api, parser, writer, logger)
             
             summary = await coordinator.download_date_range(
@@ -151,26 +153,13 @@ async def main():
             logger.info("DOWNLOAD SUMMARY")
             logger.info("="*80)
             logger.info(f"Dates processed: {summary['dates_processed']}")
-            logger.info(f"Records: {summary['total_records']:,}")
-            logger.info(f"Size: {summary['total_file_size_mb']:.2f} MB")
+            logger.info(f"Dates successful: {summary['dates_successful']}")
+            logger.info(f"Total records: {summary['total_records']:,}")
             logger.info("="*80)
-        
-    except KeyboardInterrupt:
-        logger.warning("\n⚠️ Download interrupted by user")
-        logger.info("Progress has been saved - you can resume by running again")
-    except Exception as e:
-        logger.error(f"Download failed: {e}", exc_info=True)
+    
     finally:
         await api.close()
-        logger.info("\n✓ Pipeline completed")
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n\nPipeline interrupted by user")
-    except Exception as e:
-        print(f"\n\nFatal error: {e}")
-    
-    input("\nPress Enter to exit...")
+    asyncio.run(main())

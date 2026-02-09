@@ -4,7 +4,7 @@ File splitter - converts master file into daily parquet files.
 import pandas as pd
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 from config.settings import Config
 from storage.parquet_writer import ParquetWriter
 import time
@@ -19,14 +19,27 @@ class FileSplitter:
         self.logger = logger
         self.writer = ParquetWriter(config, logger)
     
-    def split_master_to_daily(self, master_file: str, output_dir: str):
-        """Split using Arrow for FAST reads/writes."""
+    def split_master_to_daily(self, master_file: str, output_dir: str, specific_dates: List[str] = None):
+        """
+        Split using Arrow for FAST reads/writes.
+        
+        Args:
+            master_file: Path to master file
+            output_dir: Output directory for daily files
+            specific_dates: Optional list of specific dates (YYYYMMDD) to extract.
+                           If None, extracts all dates.
+        """
         import pyarrow as pa
         import pyarrow.ipc as ipc
         import pyarrow.parquet as pq
         import pyarrow.compute as pc
         
-        self.logger.info(f"Reading master file: {master_file}")
+        if specific_dates:
+            self.logger.info(
+                f"Reading master file: {master_file} (extracting {len(specific_dates)} specific dates)"
+            )
+        else:
+            self.logger.info(f"Reading master file: {master_file} (extracting all dates)")
         
         # Read the file and immediately close the memory map
         try:
@@ -92,11 +105,19 @@ class FileSplitter:
                 self.logger.error(f"Sample timestamp: {sample}")
                 raise
         
-        # Get unique dates
+        # Get unique dates (filter to specific dates if requested)
         dates_array = pc.unique(table['date']).to_pylist()
-        dates_list = sorted(dates_array)
         
-        self.logger.info(f"Splitting into {len(dates_list)} daily files...")
+        if specific_dates:
+            # Filter to only requested dates
+            dates_list = sorted([d for d in dates_array if d in specific_dates])
+            self.logger.info(
+                f"Filtering to {len(dates_list)} requested dates "
+                f"(found {len(dates_array)} total in master)"
+            )
+        else:
+            dates_list = sorted(dates_array)
+            self.logger.info(f"Splitting into {len(dates_list)} daily files...")
         
         dates_written = 0
         total_rows = 0
@@ -150,7 +171,7 @@ class FileSplitter:
                         f"  ✓ [{date}] {len(date_table):,} rows → {year}/{month}/{date}.parquet "
                         f"({len(col_names)} columns)"
                     )
-                    
+                
             except Exception as e:
                 self.logger.error(f"Failed to write date {date}: {e}")
                 continue

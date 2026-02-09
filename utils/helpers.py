@@ -4,6 +4,7 @@ Helper utilities for the pipeline.
 from datetime import datetime, timedelta
 from typing import List
 import pandas as pd
+import re
 
 
 def parse_date(date_str: str) -> datetime:
@@ -73,10 +74,26 @@ def validate_symbol_format(symbol: str) -> bool:
     
     Valid examples:
     - AAPL (common stock)
-    - GLOP-PA (preferred stock)
-    - BRK.B (class B shares)
+    - GLOP-PA (preferred stock - hyphen for preferred)
+    - BRK.B (class B shares - dot for share class)
+    
+    Invalid examples:
+    - TEK1, LZ1, DBT1 (temporary corporate action symbols - trailing digit)
+    - TEST123 (test symbols)
+    - ZZZZ (invalid markers)
+    
+    Args:
+        symbol: Stock symbol to validate
+        
+    Returns:
+        bool: True if valid format
     """
     if not symbol:
+        return False
+    
+    # Exclude symbols ending in digits (temporary corporate action symbols like TEK1, LZ1)
+    # These represent pre/post split or reorganization temporary placeholders
+    if re.search(r'\d$', symbol):
         return False
     
     # Allow alphanumeric and common special characters for preferred stocks and classes
@@ -88,6 +105,10 @@ def validate_symbol_format(symbol: str) -> bool:
     
     # Reasonable length check (most symbols are 1-6 chars, but allow up to 15 for edge cases)
     if len(symbol) < 1 or len(symbol) > 15:
+        return False
+    
+    # Exclude common test/invalid patterns
+    if symbol.startswith('TEST') or symbol.startswith('ZZZZ') or symbol.startswith('ZVZZT'):
         return False
     
     return True
@@ -137,16 +158,18 @@ def validate_ohlc_relationships(df: pd.DataFrame) -> List[int]:
         invalid_indices.update(df[mask].index.tolist())
     
     # Check volume >= 0
-    mask = df['volume'] < 0
-    if mask.any():
-        invalid_indices.update(df[mask].index.tolist())
+    if 'volume' in df.columns:
+        mask = df['volume'] < 0
+        if mask.any():
+            invalid_indices.update(df[mask].index.tolist())
     
-    return list(invalid_indices)
+    return sorted(list(invalid_indices))
 
 
 def calculate_file_size_mb(file_path: str) -> float:
     """Calculate file size in MB."""
-    import os
-    if os.path.exists(file_path):
-        return os.path.getsize(file_path) / (1024 * 1024)
+    from pathlib import Path
+    path = Path(file_path)
+    if path.exists():
+        return path.stat().st_size / (1024 * 1024)
     return 0.0

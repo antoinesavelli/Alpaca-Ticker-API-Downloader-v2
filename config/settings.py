@@ -29,19 +29,35 @@ class Config:
         self.FEED = "sip"  # SIP = 100% market coverage
         
         # ==========================================
-        # BULK DOWNLOAD CONFIGURATION - NEW!
+        # SYMBOL LOADING CONFIGURATION
+        # =========================================
+        # Options: 'csv' or 'exchanges'
+        self.SYMBOL_SOURCE = "csv"  # Changed to CSV mode
+        
+        # If SYMBOL_SOURCE = 'exchanges':
+        self.EXCHANGES = ["NYSE", "NASDAQ", "AMEX"]  # Main US exchanges
+        self.MIN_AVG_VOLUME = 0  # Minimum avg daily volume (0 = no filter)
+        
+        # If SYMBOL_SOURCE = 'csv':
+        self.SYMBOL_FILE = "T:/trading/ticker_data/symbol_universe.csv"
+        
+        # ==========================================
+        # BULK DOWNLOAD CONFIGURATION
         # =========================================
         # Maximize API efficiency by batching symbols and time ranges
-        self.SYMBOLS_PER_BATCH = 100  # Start small to verify it works
+        self.SYMBOLS_PER_BATCH = 100  # Batch size for API calls
         self.DAYS_PER_BATCH = 30      # Request 30 days (1 month) at a time
         
         # Master file settings
         self.MASTER_FILE_FORMAT = "arrow"  # Options: 'arrow', 'csv', 'parquet'
-        self.TEMP_DIR = "T:/ticker_data/temp"  # Temporary master files
-        self.STATE_FILE = "T:/ticker_data/temp/download_state.json"
+        self.TEMP_DIR = "T:/trading/ticker_data/temp"
+        self.STATE_FILE = "T:/trading/ticker_data/temp/download_state.json"
         
         # Streaming write buffer (for arrow/parquet)
         self.WRITE_BUFFER_SIZE = 1000  # Rows to buffer before writing
+        
+        # Parquet compression settings
+        self.PARQUET_COMPRESSION = 'snappy'  # Options: 'snappy', 'gzip', 'brotli', 'zstd', 'none'
         
         # ==========================================
         # DATA CONFIGURATION
@@ -67,7 +83,7 @@ class Config:
         self.LIMIT = 10000
         
         # ==========================================
-        # FILTERING CONFIGURATION - NEW!
+        # FILTERING CONFIGURATION
         # =========================================
         # Filter out bars with zero price OR zero volume
         self.FILTER_ZERO_PRICE = True
@@ -87,146 +103,72 @@ class Config:
         self.END_TIME = "20:00:00"    # 8:00 PM ET
         
         # ==========================================
-        # FILE PATHS
+        # FILE PATHS - PROPERLY NESTED IN ticker_data
         # =========================================
-        self.SYMBOL_FILE = "T:/ticker_data/symbol_universe.csv"
-        self.OUTPUT_DIR = "T:/ticker_data"
+        self.OUTPUT_DIR = "T:/trading/ticker_data"
         
         # ==========================================
         # PROCESSING MODE
         # =========================================
         self.CONSOLIDATED_DAILY_MODE = True
-        self.BULK_DOWNLOAD_MODE = True  # NEW: Enable bulk download optimization
+        self.BULK_DOWNLOAD_MODE = True  # Enable bulk download optimization
         
         # ==========================================
-        # REQUEST SETTINGS
+        # CONCURRENCY & PERFORMANCE
         # =========================================
-        self.REQUEST_TIMEOUT = 300
-        self.MAX_CONCURRENT_REQUESTS = 100
-        self.RATE_LIMIT_DELAY = 0.07
-        
-        # Dynamic rate limiting - auto-adjust if errors occur
-        self.ENABLE_DYNAMIC_RATE_LIMITING = True  # ← ADD THIS LINE
-        self.MIN_RATE_DELAY = 0.006
-        self.MAX_RATE_DELAY = 2.0
+        self.MAX_CONCURRENT_REQUESTS = 10
+        self.RETRY_ATTEMPTS = 3
+        self.RETRY_DELAY = 2.0
         
         # ==========================================
-        # PARQUET SETTINGS
+        # RATE LIMITING
         # =========================================
-        self.PARQUET_COMPRESSION = "snappy"
-        self.PARQUET_ROW_GROUP_SIZE = 100000
+        self.RATE_LIMIT_DELAY = 0.1  # Seconds between requests (start conservative)
+        self.MAX_RATE_DELAY = 5.0    # Maximum delay on errors
+        self.MIN_RATE_DELAY = 0.05   # Minimum delay (speed up on success)
         
         # ==========================================
         # LOGGING
         # =========================================
+        self.LOG_FILE = "T:/trading/ticker_data/logs/pipeline.log"
         self.LOG_LEVEL = "INFO"
-        self.LOG_FILE = "logs/alpaca_pipeline.log"
-        self.LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     
     def calculate_optimal_batch_size(self) -> int:
         """
-        Calculate optimal symbols per batch based on timeframe.
+        Calculate optimal batch size for API requests.
+        Alpaca allows up to 100 symbols per request.
         
         Returns:
-            Configured batch size (calculation disabled - use manual setting)
+            Number of symbols to request per API call
         """
-        # FOR 1MIN DATA: Manual configuration is better
-        # The calculation is too conservative for paginated requests
-        return self.SYMBOLS_PER_BATCH  # ← JUST RETURN CONFIGURED VALUE
-    
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get configuration value by key."""
-        return getattr(self, key, default)
+        # Alpaca max is 100 symbols per request
+        return min(self.SYMBOLS_PER_BATCH, 100)
     
     def get_parquet_settings(self) -> Dict[str, Any]:
-        """Get parquet-specific settings."""
+        """
+        Get parquet file settings.
+        
+        Returns:
+            Dictionary with parquet configuration options
+        """
         return {
             'compression': self.PARQUET_COMPRESSION,
-            'row_group_size': self.PARQUET_ROW_GROUP_SIZE
+            'engine': 'pyarrow',
+            'index': False
         }
     
-    def to_iso_date(self, yyyymmdd: str) -> str:
-        """Convert YYYYMMDD to ISO 8601 (YYYY-MM-DD) for Alpaca API."""
-        if len(yyyymmdd) != 8:
-            raise ValueError(f"Invalid date format: {yyyymmdd}. Expected YYYYMMDD")
-        
-        year = yyyymmdd[:4]
-        month = yyyymmdd[4:6]
-        day = yyyymmdd[6:8]
-        return f"{year}-{month}-{day}"
-        
-    def validate(self) -> bool:
-        """Validate configuration settings per Alpaca requirements."""
-        from datetime import datetime
-        
-        # Validate API credentials
+    def validate(self):
+        """Validate configuration settings."""
         if not self.ALPACA_API_KEY or not self.ALPACA_SECRET_KEY:
-            raise ValueError(
-                "❌ Alpaca API credentials not set.\n"
-                "Set these environment variables:\n"
-                "  - ALPACA_API_KEY\n"
-                "  - ALPACA_SECRET_KEY\n\n"
-                "Get your keys from: https://alpaca.markets/dashboard"
-            )
+            raise ValueError("Alpaca API credentials not set in keys.env")
         
-        # Validate feed parameter
-        valid_feeds = ['iex', 'sip', 'boats', 'overnight']
-        if self.FEED not in valid_feeds:
-            raise ValueError(f"Invalid feed '{self.FEED}'. Must be one of: {valid_feeds}")
+        if self.SYMBOL_SOURCE not in ['csv', 'exchanges']:
+            raise ValueError(f"Invalid SYMBOL_SOURCE: {self.SYMBOL_SOURCE}")
         
-        # Validate timeframe
-        valid_timeframes = [
-            '1Min', '5Min', '15Min', '30Min',
-            '1Hour', '2Hour', '4Hour',
-            '1Day', '1Week', '1Month'
-        ]
-        if self.TIMEFRAME not in valid_timeframes:
-            raise ValueError(
-                f"Invalid timeframe '{self.TIMEFRAME}'. "
-                f"Must be one of: {', '.join(valid_timeframes)}"
-            )
+        if self.SYMBOL_SOURCE == 'csv' and not os.path.exists(self.SYMBOL_FILE):
+            raise ValueError(f"Symbol file not found: {self.SYMBOL_FILE}")
         
-        # Validate adjustment type
-        valid_adjustments = ['raw', 'split', 'dividend', 'all'
-        ]
-        if self.ADJUSTMENT not in valid_adjustments:
-            raise ValueError(
-                f"Invalid adjustment '{self.ADJUSTMENT}'. "
-                f"Must be one of: {valid_adjustments}"
-            )
-        
-        # Validate sort
-        valid_sorts = ['asc', 'desc']
-        if self.SORT not in valid_sorts:
-            raise ValueError(f"Invalid sort '{self.SORT}'. Must be one of: {valid_sorts}")
-        
-        # Validate limit
-        if self.LIMIT > 10000:
-            raise ValueError("Alpaca max limit is 10000 bars per request")
-        
-        # Validate master file format
-        valid_formats = ['arrow', 'csv', 'parquet']
-        if self.MASTER_FILE_FORMAT not in valid_formats:
-            raise ValueError(f"Invalid master file format '{self.MASTER_FILE_FORMAT}'")
-        
-        # Validate zero price filter mode
-        valid_modes = ['close', 'any', 'all']
-        if self.ZERO_PRICE_FILTER_MODE not in valid_modes:
-            raise ValueError(f"Invalid zero price filter mode '{self.ZERO_PRICE_FILTER_MODE}'")
-        
-        # Validate files and directories
-        if not Path(self.SYMBOL_FILE).exists():
-            raise FileNotFoundError(f"Symbol file not found: {self.SYMBOL_FILE}")
-        
+        # Create directories
         Path(self.OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
         Path(self.TEMP_DIR).mkdir(parents=True, exist_ok=True)
         Path(self.LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
-        
-        # Validate date format
-        try:
-            datetime.strptime(self.START_DATE, '%Y%m%d')
-            datetime.strptime(self.END_DATE, '%Y%m%d')
-        except ValueError as e:
-            raise ValueError(f"Dates must be in YYYYMMDD format: {e}")
-        
-        return True

@@ -42,8 +42,13 @@ class BulkDownloader:
         self.logger = logger
         
         self.calendar = TradingCalendar(logger=logger)
-        # Pass output_dir to state manager for filesystem sync
-        self.state = StateManager(config.STATE_FILE, logger, output_dir=config.OUTPUT_DIR)
+        # Pass BOTH output_dir and temp_dir to state manager for complete filesystem sync
+        self.state = StateManager(
+            config.STATE_FILE, 
+            logger, 
+            output_dir=config.OUTPUT_DIR,
+            temp_dir=config.TEMP_DIR  # NEW: Pass temp_dir
+        )
         self.splitter = FileSplitter(config, logger)
         
         # Dynamic rate limiting
@@ -115,6 +120,9 @@ class BulkDownloader:
         # Clean up any corrupted master files from previous runs
         self._cleanup_corrupted_masters()
         
+        # Sync state with existing master files in temp directory
+        self._sync_state_with_filesystem()
+        
         # Create month batches for the date range
         month_batches = self._create_month_batches(start_date, end_date)
         all_months = [m[0][:6] for m in month_batches]  # Extract YYYYMM
@@ -138,19 +146,12 @@ class BulkDownloader:
             self.logger.info(f"\n✓ ALL WORK COMPLETE! Nothing to do.")
             return self.state.get_summary()
         
-        # First, split any pending masters (fast operation)
-        if work['needs_split'] > 0:
-            self.logger.info(f"\n{'='*80}")
-            self.logger.info(f"STEP 1: SPLITTING {work['needs_split']} PENDING MASTER FILES")
-            self.logger.info(f"{'='*80}")
-            
-            for month_label in work['split_list']:
-                await self._split_existing_month(month_label)
-        
-        # Then, download missing months
+        # ==========================================
+        # PHASE 1: DOWNLOAD ALL MISSING MONTHS
+        # ==========================================
         if work['needs_download'] > 0:
             self.logger.info(f"\n{'='*80}")
-            self.logger.info(f"STEP 2: DOWNLOADING {work['needs_download']} MISSING MONTHS")
+            self.logger.info(f"PHASE 1: DOWNLOADING {work['needs_download']} MISSING MONTHS")
             self.logger.info(f"{'='*80}")
             
             # Create symbol batches
@@ -162,7 +163,7 @@ class BulkDownloader:
             
             overall_start = time.time()
             
-            # Only process months that need downloading
+            # Download ALL months that need downloading (NO SPLITTING)
             for month_idx, (month_start, month_end) in enumerate(month_batches, 1):
                 month_label = month_start[:6]
                 
@@ -171,14 +172,28 @@ class BulkDownloader:
                     self.logger.info(f"DOWNLOADING MONTH {month_idx}/{work['total_months']}: {month_label}")
                     self.logger.info(f"{'='*80}")
                     
-                    await self._process_month_batch(
-                        month_start, month_end, symbol_batches, month_idx
+                    await self._download_month_only(
+                        month_start, month_end, symbol_batches, month_label
                     )
                 else:
-                    self.logger.info(f"⏭️  Skipping month {month_label} (already complete)")
+                    self.logger.debug(f"⏭️  Skipping month {month_label} (already downloaded)")
             
             overall_duration = time.time() - overall_start
-            self.logger.info(f"\n✓ Downloads completed in {overall_duration/60:.2f} minutes")
+            self.logger.info(f"\n✓ All downloads completed in {overall_duration/60:.2f} minutes")
+        
+        # ==========================================
+        # PHASE 2: SPLIT ALL DOWNLOADED MASTERS
+        # ==========================================
+        # Refresh work summary to get updated split list
+        work = self.state.get_work_summary(all_months)
+        
+        if work['needs_split'] > 0:
+            self.logger.info(f"\n{'='*80}")
+            self.logger.info(f"PHASE 2: SPLITTING {work['needs_split']} MASTER FILES")
+            self.logger.info(f"{'='*80}")
+            
+            for month_label in work['split_list']:
+                await self._split_existing_month(month_label)
         
         # Final summary
         summary = self.state.get_summary()
@@ -358,20 +373,123 @@ class BulkDownloader:
             self.logger.info(f"\n✓ Month {month_label} download complete: {month_records:,} records")
             await self._split_existing_month(month_label)
     
+    async def _download_month_only(
+        self,
+        month_start: str,
+        month_end: str,
+        symbol_batches: List[List[str]],
+        month_label: str
+    ):
+        """Download only - skips splitting."""
+        # Skip if already downloaded
+        if self.state.is_month_downloaded(month_label):
+            self.logger.info(f"✓ Month {month_label} already downloaded - skipping")
+            return
+        
+        # Setup master file
+        master_file = Path(self.config.TEMP_DIR) / f"{month_label}_master.{self.config.MASTER_FILE_FORMAT}"
+        
+        self.logger.info(f"Master file: {master_file}")
+        
+        writer = MasterFileWriter(
+            file_path=str(master_file),
+            file_format=self.config.MASTER_FILE_FORMAT,
+            logger=self.logger
+        )
+        
+        # Process batches
+        month_records = 0
+        month_symbols = set()
+        semaphore = asyncio.Semaphore(self.config.MAX_CONCURRENT_REQUESTS)
+        
+        async def process_single_batch(batch_idx: int, symbol_batch: List[str]):
+            nonlocal month_records
+            
+            async with semaphore:
+                batch_id = f"{month_label}_batch{batch_idx:04d}"
+                
+                # Skip completed batches
+                if self.state.is_batch_completed(batch_id):
+                    self.logger.debug(f"[{batch_id}] Already completed, skipping")
+                    month_symbols.update(symbol_batch)
+                    return
+                
+                self.logger.info(
+                    f"\n[BATCH {batch_idx}/{len(symbol_batches)}] "
+                    f"🔄 Downloading {len(symbol_batch)} symbols"
+                )
+                
+                self.state.mark_batch_started(batch_id, {
+                    'month_start': month_start,
+                    'month_end': month_end,
+                    'symbols': symbol_batch,
+                    'symbol_count': len(symbol_batch)
+                })
+                
+                batch_data = await self._fetch_batch(
+                    symbols=symbol_batch,
+                    start_date=month_start,
+                    end_date=month_end,
+                    batch_id=batch_id
+                )
+                
+                if batch_data is not None and len(batch_data) > 0:
+                    if writer.append_data(batch_data):
+                        month_records += len(batch_data)
+                        month_symbols.update(symbol_batch)
+                        self.state.mark_batch_completed(
+                            batch_id,
+                            records=len(batch_data),
+                            symbols=len(symbol_batch)
+                        )
+                        self.logger.info(f"✓ Batch {batch_id}: {len(batch_data):,} records")
+                    else:
+                        self.state.mark_batch_failed(batch_id, "Write failed")
+                else:
+                    # Mark as completed but with no data (not a failure)
+                    self.state.mark_batch_completed(batch_id, records=0, symbols=0)
+                    self.logger.debug(f"[{batch_id}] No data returned (empty batch)")
+                
+                if self.current_rate_delay > 0:
+                    await asyncio.sleep(self.current_rate_delay)
+        
+        # Launch all batches
+        tasks = [
+            process_single_batch(batch_idx, symbol_batch)
+            for batch_idx, symbol_batch in enumerate(symbol_batches, 1)
+        ]
+        
+        await asyncio.gather(*tasks)
+        
+        # Close writer (NO SPLITTING HERE!)
+        writer.close()
+        
+        # Mark month as downloaded
+        self.state.mark_month_downloaded(month_label, len(month_symbols), month_records)
+    
     async def _split_existing_month(self, month_label: str):
-        """Split an existing master file into daily files."""
+        """Split an existing master file into daily files (supports partial splits)."""
         master_file = Path(self.config.TEMP_DIR) / f"{month_label}_master.{self.config.MASTER_FILE_FORMAT}"
         
         if not master_file.exists():
             self.logger.warning(f"⚠️ Master file not found: {master_file}")
             return
         
-        self.logger.info(f"📂 Splitting {month_label}...")
+        # Check if this is a partial split (only missing days)
+        missing_days = self.state.get_missing_days_for_month(month_label)
+        
+        if missing_days:
+            self.logger.info(
+                f"📂 Splitting {month_label} (PARTIAL: {len(missing_days)} missing days)..."
+            )
+        else:
+            self.logger.info(f"📂 Splitting {month_label} (FULL split)...")
         
         try:
             split_summary = self.splitter.split_master_to_daily(
                 master_file=str(master_file),
-                output_dir=self.config.OUTPUT_DIR
+                output_dir=self.config.OUTPUT_DIR,
+                specific_dates=missing_days if missing_days else None  # Pass missing days for partial split
             )
             
             # Mark month as split
@@ -381,9 +499,9 @@ class BulkDownloader:
                 split_summary['total_rows']
             )
             
-            # Clean up master file with retry (Windows file locking)
-            if split_summary['dates_written'] > 0:
-                # Add delay and retry for Windows file locks
+            # Clean up master file only if FULL split was done
+            if not missing_days and split_summary['dates_written'] > 0:
+                # Full split complete - delete master
                 import time
                 for attempt in range(5):
                     try:
@@ -404,9 +522,15 @@ class BulkDownloader:
                             self.logger.warning(
                                 f"   The split was successful, you can manually delete this file later"
                             )
+            elif missing_days:
+                # Partial split - keep master for potential future extractions
+                self.logger.info(
+                    f"✓ Partial split complete: {split_summary['dates_written']} dates, "
+                    f"{split_summary['total_rows']:,} rows (master file retained)"
+                )
             else:
                 self.logger.warning(f"⚠️ No dates written - keeping master file")
-            
+                
         except RuntimeError as e:
             # Corrupted master file detected
             if "Corrupted master file" in str(e):
@@ -434,16 +558,22 @@ class BulkDownloader:
             self.logger.warning(f"   Keeping master file for investigation: {master_file}")
             
             # Check if it's a corrupted file error
-            if "invalid" in str(e).lower() or "flatbuffer" in str(e).lower():
+            if "invalid" in str(e).lower() or "flatbuffer" in str(e).lower() or "corrupt" in str(e).lower():
                 self.logger.warning(f"⚠️ Master file appears corrupted: {master_file}")
-                self.logger.warning(f"   You may need to delete it and re-download this month")
-                self.logger.warning(f"   To delete: delete the file manually or run with --reset")
+                self.logger.warning(f"   Attempting to delete and re-download...")
                 
-                # Mark as failed so it will be re-downloaded
-                if month_label in self.state.state['completed_months']:
-                    del self.state.state['completed_months'][month_label]
-                    self.state._save_state()
-                    self.logger.info(f"   Unmarked month {month_label} for re-download")
+                try:
+                    master_file.unlink()
+                    self.logger.info(f"   ✓ Deleted corrupt master file")
+                    
+                    # Mark as failed so it will be re-downloaded
+                    if month_label in self.state.state['completed_months']:
+                        del self.state.state['completed_months'][month_label]
+                        self.state._save_state()
+                        self.logger.info(f"   ✓ Unmarked month {month_label} for re-download")
+                        
+                except Exception as del_err:
+                    self.logger.error(f"   ✗ Could not delete: {del_err}")
     
     async def split_all_pending(self) -> Dict[str, Any]:
         """
@@ -475,6 +605,48 @@ class BulkDownloader:
             'total_dates': summary.get('months_split', 0),
             'total_rows': 0
         }
+    
+    def _sync_state_with_filesystem(self):
+        """
+        Sync state manager with existing master files in temp directory.
+        Marks months as downloaded if master files exist but aren't in state.
+        """
+        temp_dir = Path(self.config.TEMP_DIR)
+        if not temp_dir.exists():
+            return
+        
+        master_files = list(temp_dir.glob(f"*_master.{self.config.MASTER_FILE_FORMAT}"))
+        if not master_files:
+            return
+        
+        self.logger.info(f"🔍 Syncing state with {len(master_files)} existing master files...")
+        
+        synced_count = 0
+        for master_file in master_files:
+            month_label = master_file.stem.replace('_master', '')
+            
+            # Skip if already tracked as downloaded
+            if self.state.is_month_downloaded(month_label):
+                self.logger.debug(f"  ✓ {month_label}: Already in state")
+                continue
+            
+            # Check file size to ensure it's not empty or corrupted
+            file_size = master_file.stat().st_size
+            if file_size > 0:
+                # Mark as downloaded (we don't know exact counts, use placeholders)
+                self.state.mark_month_downloaded(month_label, symbols=0, records=0)
+                synced_count += 1
+                self.logger.info(f"  ✓ {month_label}: Synced to state ({file_size:,} bytes)")
+            else:
+                self.logger.warning(f"  ⚠️ {month_label}: Empty file, will re-download")
+                try:
+                    master_file.unlink()
+                    self.logger.info(f"      Deleted empty file")
+                except Exception as e:
+                    self.logger.error(f"      Could not delete empty file: {e}")
+        
+        if synced_count > 0:
+            self.logger.info(f"✓ Synced {synced_count} existing master file(s) to state")
     
     def _cleanup_corrupted_masters(self) -> int:
         """
@@ -617,17 +789,15 @@ class BulkDownloader:
                     self.current_rate_delay = min(self.current_rate_delay * 2, 5.0)
                     await asyncio.sleep(5)
                     continue
-                    
-                elif response.status_code == 422:
-                    # Invalid request (bad symbols, etc)
-                    self.logger.warning(f"[{batch_id}] Invalid request (422): {response.text}")
-                    self.state.mark_batch_failed(batch_id, f"Invalid request: {response.text}")
-                    return None
                 
+                elif response.status_code == 422:
+                    # Invalid request (bad symbols, etc) - silently skip
+                    self.logger.debug(f"[{batch_id}] Invalid symbols in batch (422) - skipping")
+                    return pd.DataFrame()  # Empty result, will skip gracefully
+            
                 elif response.status_code == 400:
-                    error_msg = response.json().get("message", response.text)
-                    self.logger.warning(f"[{batch_id}] {error_msg}")
-                    # Don't treat as failure - symbol just doesn't exist in Alpaca
+                    # Symbol doesn't exist in Alpaca - silently skip
+                    self.logger.debug(f"[{batch_id}] Symbol(s) not found (400) - skipping")
                     return pd.DataFrame()  # Empty result, will skip gracefully
             
             if page_count >= max_pages:
